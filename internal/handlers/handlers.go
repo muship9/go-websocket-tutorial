@@ -7,12 +7,13 @@ import (
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
+	"sort"
 )
 
 var views = jet.NewSet(
 	jet.NewOSFileSystemLoader("/html"),
 	jet.InDevelopmentMode(),
-	)
+)
 
 // wsコネクションの基本設定
 var upgradeConnection = websocket.Upgrader{ReadBufferSize: 1024, WriteBufferSize: 1024, CheckOrigin: func(r *http.Request) bool {
@@ -29,9 +30,9 @@ var (
 )
 
 // WebSocketsのエンドポイント
-func WsEndpoint(w http.ResponseWriter, r *http.Request)  {
+func WsEndpoint(w http.ResponseWriter, r *http.Request) {
 	// HTTPサーバーコネクションをWebSocketsプロトコルにアップグレード
-	ws, err := upgradeConnection.Upgrade(w,r,nil)
+	ws, err := upgradeConnection.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 	}
@@ -62,7 +63,7 @@ func Home(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func renderPage(w http.ResponseWriter , tmpl string, data jet.VarMap) error  {
+func renderPage(w http.ResponseWriter, tmpl string, data jet.VarMap) error {
 	view, err := views.GetTemplate(tmpl)
 	if err != nil {
 		log.Println(err)
@@ -77,7 +78,7 @@ func renderPage(w http.ResponseWriter , tmpl string, data jet.VarMap) error  {
 }
 
 // WebSocketのエンドポイントにアクセスしたときにそのコネクション情報を読み込んでチャネルに格納する
-func ListenForWs(conn *domain.WebSocketConnection)  {
+func ListenForWs(conn *domain.WebSocketConnection) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Println("Error", fmt.Sprintf("%v", r))
@@ -91,7 +92,7 @@ func ListenForWs(conn *domain.WebSocketConnection)  {
 		err := conn.ReadJSON(&payload)
 		if err != nil {
 			// do nothing
-		}else {
+		} else {
 			payload.Conn = *conn
 			wsChan <- payload
 		}
@@ -101,7 +102,7 @@ func ListenForWs(conn *domain.WebSocketConnection)  {
 // 全てのユーザーにメッセージを返す
 func broadcastToAll(response domain.WsJsonResponse) {
 	// clientsには全ユーザーのコネクション情報が格納されている
-	for client := range clients{
+	for client := range clients {
 		err := client.WriteJSON(response)
 		if err != nil {
 			log.Println("websockets err")
@@ -113,17 +114,50 @@ func broadcastToAll(response domain.WsJsonResponse) {
 }
 
 //wsChanチャネルからメッセージを読み取り、全ユーザーにメッセージをブロードキャストする
-func ListenToWsChannel()  {
+func ListenToWsChannel() {
 	var response domain.WsJsonResponse
 
-	for  {
+	for {
 		// メッセージが入るまでブロックする
-		e := <- wsChan
+		e := <-wsChan
 
-		response.Action = "Got here"
-		response.Message = fmt.Sprintf("Some message, and action was %s", e.Action)
+		switch e.Action {
+		//	コネクションのユーザー名を格納
+		case "username":
+			clients[e.Conn] = e.Username
+			users := getUserList()
+			response.Action = "Got here"
+			response.ConnectedUsers = users
+			response.Message = fmt.Sprintf("Some message, and action was %s", e.Action)
 
-		broadcastToAll(response)
+			broadcastToAll(response)
+
+		case "left":
+			response.Action = "list_users"
+			// clientsからユーザーを削除
+			delete(clients, e.Conn)
+			users := getUserList()
+			response.ConnectedUsers = users
+			broadcastToAll(response)
+
+		case "broadcast":
+			response.Action = "broadcast"
+			response.Message = fmt.Sprintf(
+				"<li class='replace'><strong>%s</strong>: %s</li>",
+				e.Username,
+				e.Message)
+			broadcastToAll(response)
+		}
 	}
 }
 
+func getUserList() []string {
+	var clientList []string
+	for _, client := range clients {
+		if client != "" {
+			clientList = append(clientList, client)
+		}
+	}
+	sort.Strings(clientList)
+	return clientList
+}
